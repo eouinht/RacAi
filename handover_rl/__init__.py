@@ -1,5 +1,5 @@
-from .enums import SliceType, TrafficClass, HandoverType
-from .models import (
+from enums import SliceType, TrafficClass, HandoverType
+from models import (
     RU,
     DU,
     CU,

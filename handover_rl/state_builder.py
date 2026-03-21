@@ -60,4 +60,8 @@ class StateBuilder:
                 "neighbors": topology.neighbors.get(ru_id, []),
             }
 
-        return {"t": snapshot.t, "ues": ue_states, "rus": ru_states}
+        return {
+            "t": snapshot.t, 
+            "ues": ue_states, 
+            "rus": ru_states
+            }

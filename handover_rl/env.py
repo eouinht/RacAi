@@ -156,16 +156,14 @@ class TraceDrivenHandoverEnv:
             old_ru = prev_ue.serving_ru
             did_ho = target_ru != old_ru
 
-            # serving cell mới
+            # serv_cell mới
             sim_ue.serving_ru = target_ru
             sim_ue.du_id = self.topology.get_du(target_ru)
             sim_ue.cu_id = self.topology.get_cu(target_ru)
 
-            # tín hiệu radio mới lấy từ air_metrics theo target RU
+           
             air_metric = sim_ue.air_metrics.get(target_ru)
             if air_metric is None:
-                # fallback: nếu trace không có metric cho target cell
-                # thì giữ metric hiện tại nhưng phạt thêm ở throughput/latency
                 target_sinr = float(sim_ue.sinr_db or -5.0)
                 target_rsrp = float(sim_ue.rsrp_dbm or -110.0)
                 missing_air_penalty = True
@@ -179,9 +177,11 @@ class TraceDrivenHandoverEnv:
 
             # ước lượng throughput theo SINR + load cell
             cell_load = max(1, ru_load.get(target_ru, 1))
+            cell_type = self.topology.rus[target_ru].cell_type
             estimated_tput = self._estimate_throughput_mbps(
                 sinr_db=target_sinr,
                 cell_load=cell_load,
+                cell_type=cell_type,
                 did_ho=did_ho,
                 missing_air_penalty=missing_air_penalty,
             )
@@ -226,6 +226,7 @@ class TraceDrivenHandoverEnv:
         self,
         sinr_db: float,
         cell_load: int,
+        cell_type: str,
         did_ho: bool,
         missing_air_penalty: bool,
     ) -> float:
@@ -241,6 +242,11 @@ class TraceDrivenHandoverEnv:
         else:
             base_rate = 50.0
 
+        if cell_type == "macro":
+            base_rate *= 0.9
+        elif cell_type == "small":
+            base_rate *= 1.1
+            
         # chia tải
         tput = base_rate / max(1, cell_load)
 

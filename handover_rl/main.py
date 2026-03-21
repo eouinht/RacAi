@@ -8,7 +8,7 @@ from parser import NS3TraceParser
 HO_MARGIN_DB = 0.0
 
 
-def choose_best_ru_by_sinr(ue_state: dict, ho_margin_db: float = HO_MARGIN_DB) -> int:
+def choose_best_ru_by_sinr(ue_state: dict, rus_state: dict, ho_margin_db: float = HO_MARGIN_DB) -> int:
     serving_ru = ue_state["serving_ru"]
     air_metrics = ue_state.get("air_metrics", {})
 
@@ -23,6 +23,13 @@ def choose_best_ru_by_sinr(ue_state: dict, ho_margin_db: float = HO_MARGIN_DB) -
         sinr = metric.get("sinr_db")
         if sinr is None:
             continue
+        
+        cell_type = rus_state.get(ru_id, {}).get("cell_type", "unknown")
+        if cell_type == "small":
+            sinr += 1.0
+        elif cell_type == "macro":
+            sinr += 0.0
+            
         if sinr > best_sinr:
             best_sinr = sinr
             best_ru = ru_id
@@ -102,7 +109,7 @@ def main() -> None:
         actions = {}
 
         for ue_id, ue_state in state["ues"].items():
-            target_ru = choose_best_ru_by_sinr(ue_state)
+            target_ru = choose_best_ru_by_sinr(ue_state, state["rus"])
 
             actions[ue_id] = UEAction(
                 target_ru=target_ru,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
 from enums import HandoverType, SliceType, TrafficClass
 
 @dataclass
@@ -36,6 +37,7 @@ class Topology:
     def get_du(self, ru_id:int) -> Optional[int]:
         ru = self.rus.get(ru_id)
         return None if ru is None else ru.du_id
+    
     def get_cu(self, ru_id:int) -> Optional[int]:
         ru = self.rus.get(ru_id)
         return None if ru is None else ru.cu_id
@@ -67,7 +69,7 @@ class UEMetrics:
     ue_id: int
     serving_ru: int
     du_id: Optional[int] = None
-    cu_id: Optional[int] = None
+    cu_id: Optional[int] = None 
     x: Optional[float] = None
     y: Optional[float] = None
     sinr_db: Optional[float] = None 

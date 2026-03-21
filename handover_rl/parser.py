@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from json import JSONDecoder
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,7 +11,7 @@ from models import CellAirMetric, CU, DU, RU, TimeStep, Topology, TraceBundle, U
 class NS3TraceParser:
     """
     Parser cho trace ns-3.
-    Hỗ trợ cả JSONL chuẩn lẫn file chứa nhiều JSON object nhiều dòng.
+    
     """
 
     def parse_file(self, path: str | Path) -> TraceBundle:
@@ -55,7 +54,7 @@ class NS3TraceParser:
             bundle.summary = record
             return
 
-        if isinstance(t, int):
+        if isinstance(t, int) and rec_type != "config" and rec_type != "topology":
             bundle.steps.append(self._parse_step(record, bundle.topology))
 
     def _parse_topology(self, record: Dict[str, Any]) -> Topology:
@@ -134,6 +133,7 @@ class NS3TraceParser:
         full_record: Dict[str, Any],
     ) -> UEMetrics:
         ue_id = int(ue_block.get("ue_id", -1))
+        
         serving_ru = int(
             ue_block.get(
                 "serving_cell",
