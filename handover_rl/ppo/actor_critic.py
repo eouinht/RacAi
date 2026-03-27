@@ -32,7 +32,7 @@ class Actor_Critic(nn.Module):
             )
         )
 
-        # PHẢI là latent_dim * 3 vì ghép:
+     
         # ue_latent + cell_latent + global_latent
         self.actor_pair = nn.Sequential(
             nn.Linear(cfg.latent_dim * 3, cfg.hidden_dim),

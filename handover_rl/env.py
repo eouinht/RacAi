@@ -16,6 +16,7 @@ from models import (
 from reward_engine import RewardEngine
 from state_builder import StateBuilder
 
+import math
 
 class TraceDrivenHandoverEnv:
     """
@@ -39,6 +40,7 @@ class TraceDrivenHandoverEnv:
             ho_costs=ho_costs or HandoverCosts(),
             delay_threshold_ms=self.env_config.delay_threshold_ms,
         )
+        self._current_snapshot: Optional[TimeStep] = None
         self._idx = 0
 
     @property
@@ -51,6 +53,7 @@ class TraceDrivenHandoverEnv:
 
         self._idx = 0
         snapshot = self.trace_bundle.steps[self._idx]
+        self._current_snapshot = snapshot
         state = self.state_builder.build(snapshot, self.topology)
         info = {
             "t": snapshot.t,
@@ -63,11 +66,11 @@ class TraceDrivenHandoverEnv:
         actions: Dict[int, UEAction],
     ) -> Tuple[Dict[str, Any], float, bool, bool, Dict[str, Any]]:
         if self._idx >= len(self.trace_bundle.steps) - 1:
-            current = self.trace_bundle.steps[self._idx]
+            current = self._current_snapshot or deepcopy(self.trace_bundle.steps[self._idx])
             state = self.state_builder.build(current, self.topology)
             return state, 0.0, True, False, {"reason": "end_of_trace"}
 
-        prev_snapshot = self.trace_bundle.steps[self._idx]
+        prev_snapshot = self._current_snapshot or deepcopy(self.trace_bundle.steps[self._idx])
         self._validate_actions(prev_snapshot, actions)
 
         self._idx += 1
@@ -86,6 +89,7 @@ class TraceDrivenHandoverEnv:
             topology=self.topology,
         )
 
+        self._current_snapshot = sim_next_snapshot
         state = self.state_builder.build(sim_next_snapshot, self.topology)
         terminated = self._idx >= len(self.trace_bundle.steps) - 1
         truncated = False
@@ -222,54 +226,28 @@ class TraceDrivenHandoverEnv:
 
         return ru_load
 
-    def _estimate_throughput_mbps(
+    
+    def _estimate_ue_throughput_mbps(
         self,
         sinr_db: float,
-        cell_load: int,
-        cell_type: str,
-        did_ho: bool,
-        missing_air_penalty: bool,
+        num_rb_alloc: float,
+        bw_rb_hz: float,
+        efficiency: float = 1.0,
     ) -> float:
-        # base rate thô theo SINR
-        if sinr_db < 0.0:
-            base_rate = 2.0
-        elif sinr_db < 5.0:
-            base_rate = 8.0
-        elif sinr_db < 10.0:
-            base_rate = 18.0
-        elif sinr_db < 15.0:
-            base_rate = 32.0
-        else:
-            base_rate = 50.0
-
-        if cell_type == "macro":
-            base_rate *= 0.9
-        elif cell_type == "small":
-            base_rate *= 1.1
-            
-        # chia tải
-        tput = base_rate / max(1, cell_load)
-
-        # penalty ngắn hạn do HO interruption
-        if did_ho:
-            tput *= 0.75
-
-        # penalty nếu thiếu air metric cho target RU
-        if missing_air_penalty:
-            tput *= 0.60
-
-        return max(0.1, tput)
-
-    def _estimate_queue_bytes(
-        self,
-        prev_queue_bytes: float,
-        arrival_bytes: float,
-        throughput_mbps: float,
-        dt_s: float = 1.0,
-    ) -> float:
-        served_bytes = throughput_mbps * 1e6 / 8.0 * dt_s
-        new_queue = max(0.0, prev_queue_bytes + arrival_bytes - served_bytes)
-        return new_queue
+        sinr_db_clamped = max(-20.0, min(30.0, float(sinr_db)))
+        sinr_linear = 10.0 ** (sinr_db_clamped / 10.0)
+        rate_bps = efficiency * float(num_rb_alloc) * float(bw_rb_hz) * math.log2(1.0 + sinr_linear)
+        return max(0.0, rate_bps / 1e6)
+        def _estimate_queue_bytes(
+            self,
+            prev_queue_bytes: float,
+            arrival_bytes: float,
+            throughput_mbps: float,
+            dt_s: float = 1.0,
+        ) -> float:
+            served_bytes = throughput_mbps * 1e6 / 8.0 * dt_s
+            new_queue = max(0.0, prev_queue_bytes + arrival_bytes - served_bytes)
+            return new_queue
 
     def _estimate_latency_ms(
         self,
