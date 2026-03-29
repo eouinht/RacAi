@@ -1,18 +1,29 @@
 import numpy as np
 from typing import Tuple
 
-def generate_ru_positions( n_ru:int, area_size: float = 500.0 
+def generate_ru_positions( 
+                          n_ru:int, 
+                          area_size: float,
+                          offset: float
                          ) -> np.ndarray:
     """
-    Input:
-        n_ru: number of RU
-        area_size: square area (meters)
-
-    Output:
-        ru_pos: (M, 2)
+    Returns:
+        ru_pos: (5, 2)
     """
-    # Giữ vị trí cố định 1 giữ - 4 xung quanh (cách đều)
-    return np.random.uniform(0, area_size, size=(n_ru,2))
+
+    cx = area_size / 2.0
+    cy = area_size / 2.0
+
+    ru_pos = np.array([
+        [cx, cy],                    # RU0 center
+        [cx - offset, cy + offset], # RU1 top-left
+        [cx + offset, cy + offset], # RU2 top-right
+        [cx - offset, cy - offset], # RU3 bottom-left
+        [cx + offset, cy - offset], # RU4 bottom-right
+    ], dtype=np.float64)
+    
+    return ru_pos
+
 
 # Map link động (RU-DU-CU) cho phép số lượng thực thể thay đổi 
 def map_ru_to_du( n_ru: int, n_du: int) -> np.ndarray:
@@ -41,7 +52,15 @@ def build_link_matrix(src_to_dst: np.ndarray, n_src: int, n_dst: int
 def build_capacity_vector(n: int, cap_value: float)-> np.ndarray:
     return np.full(n, cap_value, dtype=np.float64)
 
-def build_topology( n_ru: int, n_du: int, n_cu: int, ru_prb_cap: int, du_cpu_cap: float, cu_cpu_cap: float
+def build_topology( n_ru: int,
+                   n_du: int, 
+                   n_cu: int, 
+                   ru_prb_cap: int, 
+                   du_cpu_cap: float, 
+                   cu_cpu_cap: float,
+                   layout_type: str, 
+                   area_size: float,
+                   offset: float
 ) -> dict:
     """
     Output:

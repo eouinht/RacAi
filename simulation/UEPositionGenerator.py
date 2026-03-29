@@ -41,7 +41,12 @@ def generate_ue_slices(n_ue: int, embb_ratio: float = 0.7)->np.ndarray:
     
     return ue_slice.astype(np.int32)
 
-def init_ue_state(n_ue:int, speed_mean: float, speed_std: float, area_size: float = 500, embb_ratio: float = 0.7) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def init_ue_state(n_ue:int, 
+                  speed_mean: float, 
+                  speed_std: float, 
+                  area_size: float = 500,
+                  embb_ratio: float = 0.7
+                  ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Input:
         n_ue: number of UE

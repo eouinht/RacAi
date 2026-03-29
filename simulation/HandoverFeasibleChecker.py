@@ -1,7 +1,7 @@
 import numpy as np
 from typing import Dict 
 
-from LatencyModel import estimate_latency_state
+from .LatencyModel import estimate_latency_state
 
 def estimate_target_throughput_bps(
     target_gain: float,
@@ -121,7 +121,7 @@ def check_du_cu_capacity(
         "target_cu": target_cu
     }
     
-def check_latency_feasible(
+def check_latency_feasibility(
     target_distance_m: float,
     packet_size_bits: float,
     throughput_bps: float,
@@ -168,7 +168,7 @@ def check_latency_feasible(
         "total_latency_s": total_latency_s
     }
     
-def check_handover_feasible(
+def check_handover_feasibility(
     ue_id: int,
     source_ru:int,
     target_ru: int,
@@ -282,7 +282,7 @@ def check_handover_feasible(
     du_service_rate_pps = max(arrival_rate_pps, 100.0)
     cu_service_rate_pps = max(arrival_rate_pps, 100.0)
     
-    latency_check = check_latency_feasible(
+    latency_check = check_latency_feasibility(
         target_distance_m,
         packet_size_bits[ue_id],
         throughput_bps,

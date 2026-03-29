@@ -26,8 +26,9 @@ class SimulationConfig:
     n_ru: int
     n_du: int
     n_cu: int
+    
     n_ue: int
-
+    n_ue_jister: int
     # ---------- radio ----------
     carrier_freq_ghz: float
     bandwidth_mhz: float
@@ -49,6 +50,11 @@ class SimulationConfig:
     ue_speed_mean: float
     ue_speed_std: float
 
+    # RU layout
+    ru_layout: str
+    area_size: float
+    ru_layout_offset: float
+    
     # ---------- simulation ----------
     time_step_s: float
     n_steps: int
@@ -94,7 +100,9 @@ def create_default_config() -> SimulationConfig:
         n_ru=5,
         n_du=3,
         n_cu=3,
+        
         n_ue=50,
+        n_ue_jister=5,
         # Thay đổi UE theo thời gian +-3 
         
         # radio
@@ -118,6 +126,10 @@ def create_default_config() -> SimulationConfig:
         ue_speed_mean=1.5,
         ue_speed_std=0.5,
 
+        # RU_layout
+        ru_layout="center_square",
+        area_size=500.0,
+        ru_layout_offset=150.0,
         # simulation
         time_step_s=0.1,
         n_steps=100,
@@ -136,6 +148,10 @@ def create_default_config() -> SimulationConfig:
 # ================================
 # UTILITY FUNCTIONS
 # ================================
+def sample_n_ues(cfg: SimulationConfig):
+    low = cfg.n_ue - cfg.n_ue_jister
+    high = cfg.n_ue + cfg.n_ue_jister
+    return np.random(low, high+1)
 
 def set_random_seed(cfg: SimulationConfig):
     """
