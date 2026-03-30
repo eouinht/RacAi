@@ -29,7 +29,7 @@ class NetworkEnv:
                  dynamic_mode=False,
                  min_ues = 45,
                  max_ues= 55,
-                 mobility_step = 20.0,
+                 mobility_step = 15.0,
                  prb_cap_per_ru = None
                  ):
 
@@ -152,7 +152,9 @@ class NetworkEnv:
                          pos_xy,
                          slice_name):
         
-        
+        pkt_bits = float(self.SLICE_PRESET[str(slice_name)]["packet_size_bits"])
+        base_lambda = float(self.SLICE_PRESET[str(slice_name)]["lambda_default_pps"])
+        lam = np.random.uniform(0.8 * base_lambda, 1.2 * base_lambda)
         
         return{
             "id": int(ue_id),
@@ -175,6 +177,10 @@ class NetworkEnv:
             "traffic": {
                 "arrival_step":0,
                 "remaining_time": 0,    # Thoi gian song cu UE nay
+                "packet_size_bits": pkt_bits,
+                "lambda_pps": lam,
+                "arrival_rate_bps": lam*pkt_bits,
+                "queue_bits": 0.0,
             },
             "alloc": {
                 "RU": None, 
@@ -191,9 +197,40 @@ class NetworkEnv:
                 "num_ho": 0,        # Số lần HO 
             },
         }
+        
+    def update_traffic(self, step_duration_s=1.0):
+        for ue_id, ue in self.UE_requests.items():
+            if int(ue["status"]["active"]) != 1:
+                continue
+
+            lam = float(ue["traffic"]["lambda_pps"])
+            pkt_bits = float(ue["traffic"]["packet_size_bits"])
+
+            # số packet đến trong step
+            num_packets = np.random.poisson(lam * step_duration_s)
+            new_bits = num_packets * pkt_bits
+
+            ue["traffic"]["queue_bits"] += float(new_bits)
+            
     def _remaining_time(self):
-        return max(1, int(np.random.exponential(scale=8)))
+        return int(np.random.normal(25,46))
+    
+    def _check_prb_consistency(self, context=""):
+        total_prb = int(np.sum(self.PRB_remaining_per_RU))
+        
+        if int(self.RB_remaining) != total_prb:
+            raise RuntimeError(
+                f"[PRB ERROR] {context} mismatch: RB_remaining={self.RB_remaining}, "
+                f"sum(PRB_remaining_per_RU)={total_prb}, PRB_remaining_per_RU={self.PRB_remaining_per_RU}"
+            )
+        if np.any(self.PRB_remaining_per_RU < 0):
+            raise RuntimeError(
+                f"[PRB ERROR] {context} negative PRB per RU: {self.PRB_remaining_per_RU}"
+            )
+
+
     def _refresh_channel_and_latency(self):
+        
         self.distances_RU_UE = gen_RU_UE.calculate_distances(self.coordinates_RU,
                                                              self.coordinates_UE,
                                                              self.num_RUs,
@@ -219,8 +256,10 @@ class NetworkEnv:
     # ======================================================================
     def reset_env(self):
         """Reset remaining resources & clear all UE allocations."""
-        self.RB_remaining        = int(self.num_RBs)
+        
         self.PRB_remaining_per_RU = np.copy(self.prb_cap_per_ru).astype(int)
+        print(f"check prb_per_rus{self.PRB_remaining_per_RU}")
+        self.RB_remaining        = int(np.sum(self.PRB_remaining_per_RU))
         self.RU_power_remaining  = np.copy(self.RU_power_cap).astype(float)
         self.DU_remaining        = np.copy(self.DU_cap).astype(float)
         self.CU_remaining        = np.copy(self.CU_cap).astype(float)
@@ -240,9 +279,13 @@ class NetworkEnv:
                 "remaining_time": 0,
             })
             ue["alloc"].update({
-                "RU": None, "DU": None, "CU": None,
-                "num_RB_alloc": 0, "power_alloc": 0.0,
-                "throughput_bps": 0.0, "delay_s": 0.0,
+                "RU": None, 
+                "DU": None, 
+                "CU": None,
+                "num_RB_alloc": 0, 
+                "power_alloc": 0.0,
+                "throughput_bps": 0.0, 
+                "delay_s": 0.0,
                 "delay_parts": None
             })
             ue["ho_info"].update({
@@ -257,23 +300,32 @@ class NetworkEnv:
             
         self.done = False
         self.time_step = 0
+        self._check_prb_consistency("after reset")
         return self.get_state()
     
     def _reset_dynamic_activity(self):
-        start_active = min(max(50, self.max_active_ues), self.max_active_ues)
-        start_active = min(start_active, self.num_UEs)
+        start_active = min(50, self.max_active_ues)
+        # start_active = min(start_active, self.num_UEs)
         active_ids = set(np.random.choice(self.num_UEs, size=start_active, replace=False).tolist())
 
         self.pending_UEs = {}
         for i in range(self.num_UEs):
             ue = self.UE_requests[i]
             is_active = 1 if i in active_ids else 0
+            
             ue["status"]["active"] = is_active
             ue["status"]["is_new"] = is_active
-            if not is_active:
-                ue["status"]["accepted"] = None
-                ue["status"]["served"] = 0
+            ue["status"]["accepted"] = None
+            ue["status"]["served"] = 0
+            ue["status"]["is_ho_candidate"] = 0
+
+            if is_active:
+                ue["traffic"]["arrival_step"] = 0
+                ue["traffic"]["remaining_time"] = self._remaining_time()
+            else:
+                ue["traffic"]["arrival_step"] = 0
                 ue["traffic"]["remaining_time"] = 0
+                
             self.pending_UEs[i] = {"active": is_active}
     
     def get_state(self):
@@ -319,6 +371,9 @@ class NetworkEnv:
                 "power_alloc": float(ue["alloc"]["power_alloc"]),
                 "throughput_bps": float(ue["alloc"]["throughput_bps"]),
                 "delay_s": float(ue["alloc"]["delay_s"]),
+                "queue_bits": float(ue["traffic"].get("queue_bits", 0.0)),
+                "lambda_pps": float(ue["traffic"].get("lambda_pps", 0.0)),
+                "arrival_rate_bps": float(ue["traffic"].get("arrival_rate_bps", 0.0)),
             })
         state["UE_requests"] = ue_info
         return state
@@ -359,13 +414,15 @@ class NetworkEnv:
     # ======================================================================
     # Feasibility
     # ======================================================================
+    # tính toán resource (feasibility + requirement) là:
     def check_feasible(self, 
                        UE_idx, 
                        RU_choice, 
                        DU_choice, 
                        CU_choice, 
                        num_RB_alloc, 
-                       power_level_alloc):
+                       power_level_alloc,
+                       step_duration_s=0.1):
         """
         Returns:
             (True, (rate, cpu_DU_req, cpu_CU_req, delay_total, delay_parts))
@@ -398,13 +455,26 @@ class NetworkEnv:
         L_max        = float(UE.get("delay", np.inf))
         eta          = float(UE.get("eta_slice", 0.0))
 
-        # ---- RB / Power availability ----
+        queue_bits = float(UE["traffic"].get("queue_bits", 0.0))
+        arrival_rate_bps = float(UE["traffic"].get("arrival_rate_bps", 0.0))
+        pkt_bits = float(UE["traffic"].get("packet_size_bits", 0.0))
+        cycles_per_packet = float(UE.get("cycles_per_packet", 0.0))
+        required_rate = max(
+            R_min,
+            arrival_rate_bps,
+            queue_bits / max(step_duration_s, eps)
+        )
+        
+            # ---- RB / Power availability ----
         if not isinstance(num_RB_alloc, (int, np.integer)):
             return False, "invalid num_RB_alloc_type"
         if not (1 <= num_RB_alloc <= self.max_RBs_per_UE):
             return False, f"RB_out_of_range ({num_RB_alloc})"
+        
         if int(self.RB_remaining) < int(num_RB_alloc):
             return False, "insufficient RB remaining"
+        if int(self.PRB_remaining_per_RU[RU_choice]) < int(num_RB_alloc):
+            return False, "insufficient PRB at selected RU"
 
         if not isinstance(power_level_alloc, (int, float, np.floating)):
             return False, "invalid power_level_alloc_type"
@@ -436,16 +506,36 @@ class NetworkEnv:
                 return False, "invalid SNR value"
             if SNR_per_RB + eps < SINR_min_lin:
                 return False, "SINR_below_min"
+            
             data_rate = float(num_RB_alloc) * float(self.bandwidth_per_RB) * np.log2(1.0 + SNR_per_RB)  # bps
+       
         except Exception as e:
             return False, f"throughput_calc_error: {e}"
 
-        if data_rate + eps < R_min:
-            return False, f"insufficient_throughput ({data_rate:.2f} < {R_min:.2f})"
+        if data_rate + eps < required_rate:
+            return False, (
+            f"insufficient_throughput "
+            f"({data_rate:.2f} < required {required_rate:.2f}, "
+            f"R_min={R_min:.2f}, queue_bits={queue_bits:.2f}, arrival_rate={arrival_rate_bps:.2f})"
+        )
+            
+        
+        # ---- DU/CU CPU budgets ----
+        try:
+            if pkt_bits > 0 and cycles_per_packet > 0:
+                packet_rate_served = data_rate / pkt_bits
+                cpu_req = packet_rate_served * cycles_per_packet * (1.0 + eta)
 
-        # ---- DU/CU CPU budgets (cycles/s) ----
-        cpu_DU_req = self.k_DU * R_min * (1.0 + eta)
-        cpu_CU_req = self.k_CU * R_min * (1.0 + eta)
+                # chia mềm DU/CU theo hệ số k_DU, k_CU
+                cpu_DU_req = float(self.k_DU) * cpu_req
+                cpu_CU_req = float(self.k_CU) * cpu_req
+            else:
+                # fallback về logic cũ nếu thiếu field
+                cpu_DU_req = self.k_DU * required_rate * (1.0 + eta)
+                cpu_CU_req = self.k_CU * required_rate * (1.0 + eta)
+        except Exception as e:
+            return False, f"cpu_calc_error: {e}"
+
         if self.DU_remaining[DU_choice] + eps < cpu_DU_req:
             return False, "insufficient DU resource"
         if self.CU_remaining[CU_choice] + eps < cpu_CU_req:
@@ -533,6 +623,7 @@ class NetworkEnv:
                        num_RB_alloc, power_level_alloc,
                        throughput_bps, cpu_DU_req, cpu_CU_req, 
                        delay_total, delay_parts):
+        
         """Apply the feasible allocation; mutate resources & UE record."""
         self.RU_power_remaining[RU_choice] -= float(power_level_alloc)
         self.DU_remaining[DU_choice]       -= float(cpu_DU_req)
@@ -542,7 +633,7 @@ class NetworkEnv:
         
         UE = self.UE_requests[UE_idx]
         UE["status"].update({
-            "active": 0, 
+            "active": 1 if self.dynamic_mode else 0, 
             "accepted": True, 
             "reason": "accepted_success",
             "served": 1,
@@ -558,7 +649,15 @@ class NetworkEnv:
             "delay_s": float(delay_total),
             "delay_parts": delay_parts
         })
-
+        
+        served_bits = float(throughput_bps) * 1.0
+        UE["traffic"]["queue_bits"] = max(
+            0.0,
+            float(UE["traffic"].get("queue_bits", 0.0)) - served_bits
+        )
+        
+        self._check_prb_consistency(f"after update UE {UE_idx}")
+        
     def release_ue(self, UE_idx, reason="departed"):
         UE = self.UE_requests[UE_idx]
         old_ru = UE["alloc"]["RU"]
@@ -600,7 +699,8 @@ class NetworkEnv:
             "delay_parts": None,
         })
         self.pending_UEs[UE_idx]["active"] = 0
-    
+        self._check_prb_consistency(f"after release UE {UE_idx}")
+
     def apply_handover(self,
                        UE_idx,
                        target_RU,
@@ -612,19 +712,31 @@ class NetworkEnv:
                        cpu_DU_req,
                        cpu_CU_req,
                        delay_total,
-                       delay_parts):
+                       delay_parts):   
+        
         self.release_ue(UE_idx=UE_idx, reason="handover_release")
+        
         self.UE_requests[UE_idx]["status"]["active"] = 1
+        
         self.UE_requests[UE_idx]["traffic"]["remaining_time"] = max(
             1, int(self.UE_requests[UE_idx]["traffic"].get("remaining_time", 1))
         )
         self.update_network(
-            UE_idx, target_RU, target_DU, target_CU,
-            target_num_RB, target_power,
-            throughput_bps, cpu_DU_req, cpu_CU_req, delay_total, delay_parts,
+            UE_idx, 
+            target_RU, 
+            target_DU, 
+            target_CU,
+            target_num_RB, 
+            target_power,
+            throughput_bps, 
+            cpu_DU_req, 
+            cpu_CU_req,
+            delay_total, 
+            delay_parts
         )
         self.UE_requests[UE_idx]["ho_info"]["last_ho_step"] = int(self.time_step)
         self.UE_requests[UE_idx]["ho_info"]["num_ho"] += 1
+        self._check_prb_consistency(f"after apply handover UE {UE_idx}")
 
     # ======================================================================
     # RL step
@@ -739,20 +851,32 @@ class NetworkEnv:
         return departed_ids
     
     # Add new ue vao mang khi UE khong du nguong min
-    def add_new_ues(self, target_total=None):
-        inactive_ids = [i for i in range(self.num_UEs) if int(self.UE_requests[i]["status"]["active"]) == 0]
-        current_total = int(sum(self.UE_requests[i]["status"]["active"] for i in range(self.num_UEs)))
+    def add_new_ues(self, target_active_use=None):
+        current_total = int(sum(
+            self.UE_requests[i]["status"]["active"] for i in range(self.num_UEs)
+        ))
+        if current_total >= self.max_active_ues:
+            return []
+        
+        inactive_ids = [
+            i for i in range(self.num_UEs)
+            if int(self.UE_requests[i]["status"]["active"]) == 0
+        ]
 
-        if target_total is None:
-            if current_total < self.min_active_ues:
-                target_total = min(self.max_active_ues, max(50, self.min_active_ues))
-            else:
-                target_total = current_total
-
-        num_new = max(0, min(len(inactive_ids), int(target_total) - current_total))
-        if num_new == 0:
+        if len(inactive_ids) == 0:
             return []
 
+        if current_total <= self.min_active_ues:
+            num_new = target_active_use - current_total
+        else:
+            num_new = int((target_active_use - current_total)/2)
+        
+        # num_new = np.random.randint(1, max_new_per_step + 1)
+        # num_new = min(num_new, len(inactive_ids))
+        num_new = min(num_new, len(inactive_ids), self.max_active_ues - current_total)
+        # print(f"num new: {num}")
+        if num_new <= 0:
+            return []    
         new_positions = gen_RU_UE.gen_coordinates_UE(num_new)
         new_slices = gen_RU_UE.gen_UE_requirements(num_new, self.SLICE_PRESET)
         chosen_ids = inactive_ids[:num_new]
@@ -760,12 +884,15 @@ class NetworkEnv:
         for local_idx, ue_id in enumerate(chosen_ids):
             self.coordinates_UE[ue_id] = new_positions[local_idx]
             self.UE_slice_name[ue_id] = new_slices[local_idx]
-            self.UE_requests[ue_id] = self._build_ue_record(ue_id, new_positions[local_idx], new_slices[local_idx])
-            self.UE_requests[ue_id]["traffic"].update({
-                "arrival_step": int(self.time_step),
-                "remaining_time": self._remaining_time(),
-            })
+            self.UE_requests[ue_id] = self._build_ue_record(
+                ue_id,
+                new_positions[local_idx],
+                new_slices[local_idx]
+            )
+            self.UE_requests[ue_id]["traffic"]["arrival_step"] = int(self.time_step)
+            self.UE_requests[ue_id]["traffic"]["remaining_time"] = self._remaining_time()
             self.pending_UEs[ue_id]["active"] = 1
+           
 
         return chosen_ids
     
@@ -819,7 +946,8 @@ class NetworkEnv:
             self.release_ue(ue_id, reason="departed")
 
         self.move_active_ues()
-        new_ue_ids = self.add_new_ues(target_total=target_active_ues)
+        self.update_traffic()
+        new_ue_ids = self.add_new_ues(target_active_ues)
         self._refresh_channel_and_latency()
 
         stable_ues, ho_candidates, new_ue_candidates = self.get_filter_ues()

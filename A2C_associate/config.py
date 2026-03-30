@@ -5,8 +5,8 @@ import numpy as np
 SEED = 42
 # ---------------------- Quy mô mạng -----------------------
 num_RUs = 5         # số RU (Radio Unit)
-num_DUs = 2         # số DU (Distributed Unit)
-num_CUs = 2         # số CU (Central Unit)
+num_DUs = 3         # số DU (Distributed Unit)
+num_CUs = 3         # số CU (Central Unit)
 total_nodes = num_RUs + num_DUs + num_CUs
 
 # ---------------------- RB & băng thông -------------------

@@ -4,7 +4,84 @@ import numpy as np
 from config import *
 from Env.network_env import NetworkEnv
 
+def run_admission(env, new_ues):
+    accepted = 0
+    fail_reasons = {}
 
+    for ue_id in new_ues:
+        placed = False
+
+        # 1. RU theo gain (tốt → kém)
+        ru_order = np.argsort(env.gain[:, ue_id])[::-1]
+
+        for ru in ru_order:
+
+            # 2. chỉ lấy DU nối được với RU
+            valid_dus = np.where(env.l_ru_du[ru] == 1)[0]
+            # print(f"RU {ru} -> DU {valid_dus}")
+            
+            if len(valid_dus) == 0:
+                continue
+
+            for du in valid_dus:
+
+                # 3. chỉ lấy CU nối được với DU
+                valid_cus = np.where(env.l_du_cu[du] == 1)[0]
+                
+                # print(f"DU {du} -> CU {valid_cus}")
+                if len(valid_cus) == 0:
+                    continue
+
+                for cu in valid_cus:
+
+                    # 4. thử resource (ít → nhiều)
+                    for prb in range(1, env.max_RBs_per_UE + 1):
+
+                        for ptx in env.P_ib_sk_val:
+
+                            ok, msg = env.check_feasible(ue_id, 
+                                                         int(ru), 
+                                                         int(du), 
+                                                         int(cu), 
+                                                         prb, 
+                                                         ptx
+                            )
+
+                            if ok:
+                                thr, cpu_du, cpu_cu, delay_total, delay_parts = msg
+
+                                env.update_network(
+                                    ue_id,
+                                    int(ru),
+                                    int(du),
+                                    int(cu),
+                                    prb,
+                                    ptx,
+                                    thr,
+                                    cpu_du,
+                                    cpu_cu,
+                                    delay_total,
+                                    delay_parts,
+                                )
+
+                                accepted += 1
+                                placed = True
+                                break
+
+                        if placed:
+                            break
+                    if placed:
+                        break
+                if placed:
+                    break
+            if placed:
+                break
+
+        if not placed:
+            fail_reasons["not_feasible"] = fail_reasons.get("not_feasible", 0) + 1
+
+    return accepted, fail_reasons
+            
 def build_env(num_ues=50, num_rbs=135, dynamic_mode=True):
     env = NetworkEnv(
         total_nodes=total_nodes,
@@ -27,74 +104,90 @@ def build_env(num_ues=50, num_rbs=135, dynamic_mode=True):
         dynamic_mode=dynamic_mode,
         min_ues=45,
         max_ues=55,
-        mobility_step=20.0,
+        mobility_step=10.0,
     )
     return env
 
 
-def print_step_info(state, info):
-    print(f"time_step        : {info['time_step']}")
-    print(f"num_active_ues   : {state['num_active_ues']}")
-    print(f"departed_ues     : {info['departed_ues']}")
-    print(f"new_ue_ids       : {info['new_ue_ids']}")
-    print(f"stable_ues       : {len(info['stable_ues'])}")
-    print(f"ho_candidates    : {len(info['ho_candidates'])}")
-    print(f"new_ue_candidates: {len(info['new_ue_candidates'])}")
-    print(f"RB_remaining     : {state['RB_remaining']}")
-    print(f"PRB_per_RU       : {state['PRB_remaining_per_RU']}")
+def print_stats(env, state, info):
+    served_active = sum(
+        1 for ue in env.UE_requests.values()
+        if ue["status"]["active"] == 1 and ue["status"]["served"] == 1
+    )
+
+    print(f"time_step           : {info['time_step']}")
+    print(f"active_ues          : {state['num_active_ues']}")
+    print(f"served_active       : {served_active}")
+    print(f"new_ues             : {len(info['new_ue_candidates'])}")
+    print(f"stable_ues          : {len(info['stable_ues'])}")
+    print(f"ho_candidates       : {len(info['ho_candidates'])}")
+    print(f"RB_remaining        : {state['RB_remaining']}")
+    print(f"PRB_remaing_per_RU  : {state['PRB_remaining_per_RU']}")
     print("-" * 50)
 
+def print_ue_path(env):
+    print("\n===== UE PATHS =====")
+    
+    for ue_id, ue in env.UE_requests.items():
+        if int(ue["status"]["active"]) != 1 or int(ue["status"]["served"]) != 1:
+            continue
 
+        ru = ue["alloc"]["RU"]
+        du = ue["alloc"]["DU"]
+        cu = ue["alloc"]["CU"]
+        prb = ue["alloc"]["num_RB_alloc"]
+        ptx = ue["alloc"]["power_alloc"]
+
+        print(
+            f"UE {ue_id} --> RU {ru} --> DU {du} --> CU {cu} | "
+            f"PRB={prb}, PTX={ptx:.6f}"
+        )
+    print("-" * 60)
+
+def print_traffic(env):
+    print("\n===== UE TRAFFIC =====")
+    for ue_id, ue in env.UE_requests.items():
+        if int(ue["status"]["active"]) != 1:
+            continue
+        print(
+            f"UE {ue_id:>2} | slice={ue['slice']:<5} | "
+            f"queue={ue['traffic']['queue_bits']:.1f} bits | "
+            f"lambda={ue['traffic']['lambda_pps']:.2f} pps | "
+            f"rate={ue['traffic']['arrival_rate_bps']:.2f} bps"
+        )
+    print("-" * 60)
+    
 def main():
     seed = 2
     random.seed(seed)
     np.random.seed(seed)
 
-    env = build_env(num_ues=60, num_rbs=135, dynamic_mode=True)
+    env = build_env(num_ues=50, num_rbs=135, dynamic_mode=True)
 
     print("=== RESET ===")
     state = env.reset_env()
     print("num_active_ues:", state["num_active_ues"])
     print("RB_remaining :", state["RB_remaining"])
-    print("PRB_per_RU   :", state["PRB_remaining_per_RU"])
+    
+    print("PRB_remaining_per_RU   :", state["PRB_remaining_per_RU"])
     print("-" * 50)
 
-    for t in range(5):
-        target_active = int(np.random.randint(45, 56))
-        print(f"=== ADVANCE {t+1} | target_active={target_active} ===")
-        state, info = env.advance_time(target_active_ues=target_active)
-        accepted = 0
-        reasons = {}
+    for t in range(10):
+        target = int(np.random.randint(45, 56))
+        print(f"\n=== STEP {t+1} | target={target} ===")
+        state, info = env.advance_time(target_active_ues=target)
+        accepted, fail = run_admission(env, info["new_ue_candidates"])
 
-        for ue_id in info["new_ue_candidates"]:
-            ok, msg = env.check_feasible(
-                UE_idx=ue_id,
-                RU_choice=0,
-                DU_choice=0,
-                CU_choice=0,
-                num_RB_alloc=1,
-                power_level_alloc=env.P_ib_sk_val[0],
-            )
+        state = env.get_state()
+        
+        
 
-            if ok:
-                thr, cpu_du, cpu_cu, delay_total, delay_parts = msg
-                env.update_network(
-                    ue_id, 0, 0, 0,
-                    1, env.P_ib_sk_val[0],
-                    thr, cpu_du, cpu_cu, delay_total, delay_parts
-                )
-                accepted += 1
-            else:
-                reasons[str(msg)] = reasons.get(str(msg), 0) + 1
-
-        print("accepted this step:", accepted)
-        # print("fail reasons:", reasons)
-        print("RB_remaining:", env.RB_remaining)
-        print("PRB_remaining_per_RU:", env.PRB_remaining_per_RU)
-        print("RU_power_remaining:", env.RU_power_remaining)
-        print("DU_remaining:", env.DU_remaining)
-        print("CU_remaining:", env.CU_remaining)
-        # print_step_info(state, info)
+        print_stats(env, state, info)
+        # print_ue_path(env)
+        # print_traffic(env)
+        # print(f"accepted this step: {accepted}")
+        # print(f"fail reasons: {fail}")
+        
 
     print("Smoke test done.")
 
