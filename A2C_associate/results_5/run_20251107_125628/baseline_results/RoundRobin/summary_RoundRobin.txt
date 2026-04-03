@@ -1,3 +1,0 @@
-mean_reward=29.785395
-mean_accept=5.000000
-mean_throughput=317281520.288948

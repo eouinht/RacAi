@@ -1,5 +1,0 @@
-==== Baseline summary ====
-mean_reward=355.051788
-mean_accept=14.050000
-mean_throughput_avg=91774530.400503
-mean_latency_avg=2.313261e-04

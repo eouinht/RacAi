@@ -13,6 +13,21 @@ def _active_ues(state):
     return [ue for ue in state["UE_requests"] if int(ue.get("active", 0)) == 1]
 
 
+def _categorize_ues(state):
+    """Nhóm UE thành stable/ho/new theo trạng thái đã có trong state.K"""
+    stable, ho, new = [], [], []
+    for ue in state["UE_requests"]:
+        if int(ue.get("active", 0)) != 1:
+            continue
+        if int(ue.get("is_ho_candidate", 0)) == 1:
+            ho.append(ue)
+        elif int(ue.get("is_new", 0)) == 1:
+            new.append(ue)
+        else:
+            stable.append(ue)
+    return stable, ho, new
+
+
 # ======================================================
 # =================== Baseline Agents ==================
 # ======================================================
@@ -37,13 +52,14 @@ class RandomRUAgent:
         self.power_levels = np.array(power_levels, dtype=float)
         self.rng = np.random.default_rng(seed)
 
-    def select_action(self, state):
-        pending = _active_ues(state)
-        if not pending:
+    def select_action(self, state, ue_pool=None):
+        if ue_pool is None:
+            ue_pool = _active_ues(state)
+        if not ue_pool:
             return None, None, None
 
-        # -------- UE random --------
-        ue = self.rng.choice(pending)
+        # -------- UE random (pool) --------
+        ue = self.rng.choice(ue_pool)
         ue_id = int(ue["id"])
 
         # -------- Accept / Reject random --------
@@ -84,13 +100,14 @@ class NearestRUAgent:
         self.distances_RU_UE = np.array(distances_RU_UE, dtype=float)
         self.rng = np.random.default_rng(seed)
 
-    def select_action(self, state):
-        pending = _active_ues(state)
-        if not pending:
+    def select_action(self, state, ue_pool=None):
+        if ue_pool is None:
+            ue_pool = _active_ues(state)
+        if not ue_pool:
             return None, None, None
 
-        # UE random (baseline phải random)
-        ue = self.rng.choice(pending)
+        # UE select from pool
+        ue = self.rng.choice(ue_pool)
         ue_id = int(ue["id"])
 
         if int(state["RB_remaining"]) <= 0:
@@ -165,15 +182,16 @@ class RoundRobinAgent:
         self._ue_ptr = 0
         self._ru_ptr = defaultdict(int)  # ue_id -> next RU index
 
-    def select_action(self, state):
-        pending = _active_ues(state)
-        if not pending:
+    def select_action(self, state, ue_pool=None):
+        if ue_pool is None:
+            ue_pool = _active_ues(state)
+        if not ue_pool:
             return None, None, None
 
         # -------- UE Round Robin --------
-        ue = pending[self._ue_ptr % len(pending)]
+        ue = ue_pool[self._ue_ptr % len(ue_pool)]
         ue_id = int(ue["id"])
-        self._ue_ptr = (self._ue_ptr + 1) % max(1, len(pending))
+        self._ue_ptr = (self._ue_ptr + 1) % max(1, len(ue_pool))
 
         if int(state["RB_remaining"]) <= 0:
             return (ue_id, 0, 0, 0, 0, 1, 0.0), 0, 0
@@ -248,7 +266,16 @@ def evaluate_baseline(agent, env, episodes=20, render=False):
 
         t0 = time.time()
         while not done:
-            action, _, _ = agent.select_action(state)
+            stable, ho, new_ues = _categorize_ues(state)
+            # Ưu tiên HO -> new -> stable
+            if ho:
+                pool = ho
+            elif new_ues:
+                pool = new_ues
+            else:
+                pool = stable
+
+            action, _, _ = agent.select_action(state, ue_pool=pool)
             if action is None:
                 break
             next_state, reward, done, info = env.step(action)

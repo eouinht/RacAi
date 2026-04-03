@@ -340,10 +340,10 @@ class NetworkEnv:
             "l_ru_du":            np.copy(self.l_ru_du),
             "l_du_cu":            np.copy(self.l_du_cu),
             "RB_remaining":       int(self.RB_remaining),
-            "PRB_remaining_per_RU": np.copy(self.PRB_remaining_per_RU),
+            "PRB_remaining_per_RU":np.copy(self.PRB_remaining_per_RU),
             "time_step": int(self.time_step),
             "num_active_ues": int(sum(self.UE_requests[i]["status"]["active"] for i in range(self.num_UEs))),
-     
+            "gain":                np.copy(self.gain),
         }
 
         ue_info = []
@@ -412,6 +412,202 @@ class NetworkEnv:
         return float(reward)
 
     # ======================================================================
+    # Compute PRB Requirement
+    # ======================================================================
+    def compute_prb_requirement(self,
+                                UE_idx,
+                                RU_choice,
+                                DU_choice,
+                                CU_choice,
+                                power_level_alloc,
+                                step_duration_s=0.1):
+        """
+        Compute minimum PRB required to satisfy UE requirements.
+        
+        Uses binary search to find minimum num_RB_alloc such that:
+        - Throughput >= required rate (R_min or queue/arrival based)
+        - SINR >= SINR_min
+        - All other constraints satisfied
+        
+        Args:
+            UE_idx: UE index
+            RU_choice: Selected RU
+            DU_choice: Selected DU
+            CU_choice: Selected CU
+            power_level_alloc: Power allocation in Watts
+            step_duration_s: Duration of time step
+            
+        Returns:
+            (min_prb, status, details) where: 
+            - min_prb: Minimum PRBs needed (or -1 if infeasible)
+            - status: "feasible" or reason for failure
+            - details: dict with throughput, SINR, CPU req, latency, etc.
+        """
+        eps = 1e-9
+        
+        # ---- Validate indices & UE active ----
+        if not (0 <= UE_idx < self.num_UEs):
+            return -1, "invalid_UE_idx", {}
+        if not (0 <= RU_choice < self.num_RUs):
+            return -1, "invalid_RU_choice", {}
+        if not (0 <= DU_choice < self.num_DUs):
+            return -1, "invalid_DU_choice", {}
+        if not (0 <= CU_choice < self.num_CUs):
+            return -1, "invalid_CU_choice", {}
+            
+        UE = self.UE_requests[UE_idx]
+        if int(UE["status"]["active"]) != 1:
+            return -1, "UE_not_active", {}
+            
+        # ---- Extract UE requirements ----
+        R_min        = float(UE.get("R_min", 0.0))
+        SINR_min_dB  = float(UE.get("SINR_min", -1e9))
+        SINR_min_lin = 10.0 ** (SINR_min_dB / 10.0)
+        L_max        = float(UE.get("delay", np.inf))
+        eta          = float(UE.get("eta_slice", 0.0))
+        
+        queue_bits = float(UE["traffic"].get("queue_bits", 0.0))
+        arrival_rate_bps = float(UE["traffic"].get("arrival_rate_bps", 0.0))
+        pkt_bits = float(UE["traffic"].get("packet_size_bits", 0.0))
+        cycles_per_packet = float(UE.get("cycles_per_packet", 0.0))
+        
+        required_rate = max(
+            R_min,
+            arrival_rate_bps,
+            queue_bits / max(step_duration_s, eps)
+        )
+        
+        # ---- Validate power ----
+        if not isinstance(power_level_alloc, (int, float, np.floating)):
+            return -1, "invalid_power_type", {}
+        if not np.isfinite(power_level_alloc) or power_level_alloc <= 0:
+            return -1, "invalid_power_value", {}
+        if self.RU_power_remaining[RU_choice] + eps < float(power_level_alloc):
+            return -1, "insufficient_RU_power", {}
+            
+        # ---- Validate topology links ----
+        if self.l_ru_du[RU_choice, DU_choice] == 0:
+            return -1, "no_RU_DU_link", {}
+        if self.l_du_cu[DU_choice, CU_choice] == 0:
+            return -1, "no_DU_CU_link", {}
+            
+        # ---- Get channel gain ----
+        try:
+            gain = float(self.gain[RU_choice, UE_idx])
+            if not np.isfinite(gain) or gain <= 0.0:
+                return -1, "invalid_channel_gain", {}
+        except Exception as e:
+            return -1, f"gain_access_error: {e}", {}
+            
+        # ---- Binary search for minimum PRB ----
+        min_prb = 1
+        max_prb = int(self.max_RBs_per_UE)
+        best_prb = -1
+        
+        # First check if even max PRB is sufficient
+        power_per_rb = float(power_level_alloc) / float(max_prb)
+        snr_per_rb = power_per_rb * gain
+        
+        if snr_per_rb + eps < SINR_min_lin:
+            return -1, "SINR_below_min_even_at_max_prb", {"SINR_required": SINR_min_lin, "SINR_available": snr_per_rb}
+        
+        # Check if SINR constraint can pass
+        max_power_per_rb = float(power_level_alloc) / float(min_prb)
+        max_snr = max_power_per_rb * gain
+        if max_snr + eps < SINR_min_lin:
+            return -1, "SINR_below_min_constraint", {"SINR_required": SINR_min_lin, "SINR_available": max_snr}
+        
+        # Binary search
+        while min_prb <= max_prb:
+            mid_prb = (min_prb + max_prb) // 2
+            
+            # Calculate throughput at mid_prb
+            power_per_rb = float(power_level_alloc) / float(mid_prb)
+            snr_per_rb = power_per_rb * gain
+            
+            # Check SINR constraint
+            if snr_per_rb + eps < SINR_min_lin:
+                # Need more power per RB, so need fewer RBs
+                min_prb = mid_prb + 1
+                continue
+                
+            # Calculate data rate
+            data_rate = float(mid_prb) * float(self.bandwidth_per_RB) * np.log2(1.0 + snr_per_rb)
+            
+            if data_rate + eps >= required_rate:
+                # This PRB works, try to find smaller
+                best_prb = mid_prb
+                max_prb = mid_prb - 1
+            else:
+                # Need more PRBs
+                min_prb = mid_prb + 1
+        
+        if best_prb < 0:
+            return -1, "no_feasible_prb_found", {"required_rate": required_rate}
+            
+        # ---- Verify best_prb and compute metrics ----
+        power_per_rb = float(power_level_alloc) / float(best_prb)
+        snr_per_rb = power_per_rb * gain
+        data_rate = float(best_prb) * float(self.bandwidth_per_RB) * np.log2(1.0 + snr_per_rb)
+        
+        # Compute CPU requirements
+        try:
+            if pkt_bits > 0 and cycles_per_packet > 0:
+                packet_rate_served = data_rate / pkt_bits
+                cpu_req = packet_rate_served * cycles_per_packet * (1.0 + eta)
+                cpu_DU_req = float(self.k_DU) * cpu_req
+                cpu_CU_req = float(self.k_CU) * cpu_req
+            else:
+                cpu_DU_req = self.k_DU * required_rate * (1.0 + eta)
+                cpu_CU_req = self.k_CU * required_rate * (1.0 + eta)
+        except Exception as e:
+            return -1, f"cpu_calc_error: {e}", {}
+            
+        # Check CPU availability
+        if self.DU_remaining[DU_choice] + eps < cpu_DU_req:
+            return best_prb, "insufficient_DU_resource", {"cpu_DU_req": cpu_DU_req, "DU_remaining": self.DU_remaining[DU_choice]}
+        if self.CU_remaining[CU_choice] + eps < cpu_CU_req:
+            return best_prb, "insufficient_CU_resource", {"cpu_CU_req": cpu_CU_req, "CU_remaining": self.CU_remaining[CU_choice]}
+            
+        # Compute latency
+        try:
+            s_name = UE["slice"]
+            s_idx = self.slice_names.index(s_name)
+            prop = float(self.propagation_delay[RU_choice, UE_idx])
+            tx = float(self.transmission_delay[UE_idx])
+            proc_du = float(self.processing_delay_DU[DU_choice, s_idx, UE_idx])
+            proc_cu = float(self.processing_delay_CU[CU_choice, s_idx, UE_idx])
+            q_du = float(self.queuing_delay_DU[DU_choice, s_idx, UE_idx])
+            q_cu = float(self.queuing_delay_CU[CU_choice, s_idx, UE_idx])
+            
+            L_total = prop + tx + proc_du + proc_cu + q_du + q_cu
+            
+            if not np.isfinite(L_total):
+                return best_prb, "latency_nan_or_inf", {}
+            if L_total > L_max:
+                return best_prb, f"latency_violation ({L_total:.6f}s > {L_max:.6f}s)", {"latency": L_total, "L_max": L_max}
+                
+        except Exception as e:
+            return best_prb, f"latency_calc_error: {e}", {}
+            
+        # Everything checks out
+        details = {
+            "min_prb": int(best_prb),
+            "throughput_bps": float(data_rate),
+            "required_rate_bps": float(required_rate),
+            "SINR_lin": float(snr_per_rb),
+            "SINR_min_lin": float(SINR_min_lin),
+            "power_level_alloc": float(power_level_alloc),
+            "power_per_rb": float(power_per_rb),
+            "cpu_DU_req": float(cpu_DU_req),
+            "cpu_CU_req": float(cpu_CU_req),
+            "latency_s": float(L_total),
+            "latency_max_s": float(L_max),
+        }
+        
+        return int(best_prb), "feasible", details
+
+    # ======================================================================
     # Feasibility
     # ======================================================================
     # tính toán resource (feasibility + requirement) là:
@@ -459,6 +655,7 @@ class NetworkEnv:
         arrival_rate_bps = float(UE["traffic"].get("arrival_rate_bps", 0.0))
         pkt_bits = float(UE["traffic"].get("packet_size_bits", 0.0))
         cycles_per_packet = float(UE.get("cycles_per_packet", 0.0))
+        
         required_rate = max(
             R_min,
             arrival_rate_bps,
